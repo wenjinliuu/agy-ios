@@ -85,7 +85,7 @@ final class BridgeTests: XCTestCase {
         XCTAssertEqual(demoStore.conversations.count, 2)
 
         let store = AppStore(
-            secretStore: InMemorySecretStore([
+            secretStore: InMemorySecretStore(initial: [
                 "agy_server_url": "https://mock.local",
                 "agy_auth_token": "mock-token",
             ]),
