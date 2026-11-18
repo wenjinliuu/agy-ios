@@ -1,0 +1,22 @@
+workdir: ios
+project: Agy.xcodeproj
+scheme: Agy
+bundle_id: com.wenjinliu.agy
+display_name: Agy
+sync_command: 'true'
+generate_command: xcodegen generate
+icon_path: Agy/Resources/AppIcon.icon
+
+toolchain:
+  xcode: '26.6'
+  simulator: iPhone 17 Pro
+  ios: '26.4'
+
+build_test:
+  accessibility_audit: warn
+  commit_recorded_snapshots: false
+
+testflight:
+  entitlement_mode: none
+  artifact_prefix: agy-ios-
+  acceptance_issue: true

@@ -1,0 +1,17 @@
+[Unit]
+Description=Antigravity Remote Bridge for iOS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/projects/agy-ios/bridge
+EnvironmentFile=/home/ubuntu/projects/agy-ios/bridge/.env
+ExecStart=/usr/bin/node /home/ubuntu/projects/agy-ios/bridge/src/index.ts
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,40 @@
+# Local secrets & environment
+.env
+.env.*
+!.env.example
+bridge/.env
+bridge/.env.*
+!bridge/env.example
+worker/wrangler.jsonc
+worker/.wrangler/
+worker/.dev.vars
+
+# Node / TypeScript
+node_modules/
+*/node_modules/
+dist/
+*/dist/
+*.tsbuildinfo
+
+# Xcode / XcodeGen
+build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+!*.xcworkspace/contents.xcworkspacedata
+xcuserdata/
+*.xcuserstate
+ios/Agy/Resources/Info.plist
+
+# Build artifacts & signing
+*.ipa
+*.dSYM.zip
+*.app.dSYM.zip
+ExportOptions.plist
+AuthKey_*.p8
+*.mobileprovision
+*.p12
+
+# OS / editors
+.DS_Store
+__pycache__/

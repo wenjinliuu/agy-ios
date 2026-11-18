@@ -1,0 +1,97 @@
+name: Agy
+options:
+  bundleIdPrefix: com.wenjinliu
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: false
+  fileTypes:
+    "icon":
+      file: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_EMIT_LOC_STRINGS: NO
+
+targets:
+  Agy:
+    type: application
+    platform: iOS
+    sources:
+      - path: Agy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wenjinliu.agy
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+    info:
+      path: Agy/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Agy
+        CFBundleDevelopmentRegion: zh-Hans
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
+          NSAllowsLocalNetworking: true
+
+  AgyTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/AgyTests
+    dependencies:
+      - target: Agy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wenjinliu.agy.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_ALLOWED: NO
+
+  AgyUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Tests/AgyUITests
+    dependencies:
+      - target: Agy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wenjinliu.agy.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_ALLOWED: NO
+        TEST_TARGET_NAME: Agy
+
+schemes:
+  Agy:
+    build:
+      targets:
+        Agy: all
+        AgyTests: [test]
+        AgyUITests: [test]
+    test:
+      targets:
+        - AgyTests
+        - AgyUITests
+      gatherCoverageData: false
+    run:
+      config: Debug
+    archive:
+      config: Release
