@@ -17,8 +17,25 @@ private final class IdleMockBridgeService: BridgeServicing, @unchecked Sendable 
 
     func fetchModels(baseURL: URL, token: String) async throws -> [ModelInfo] { [] }
     func fetchWorkspaces(baseURL: URL, token: String) async throws -> [String] { [] }
+    func fetchConfigOverview(baseURL: URL, token: String) async throws -> ConfigOverview {
+        ConfigOverview(
+            agyVersion: "1.5.10",
+            bridgeVersion: "0.1.0",
+            hostname: "mock",
+            defaultWorkspace: "/tmp",
+            defaultModel: "gemini-3.8-flash-medium",
+            activeConversationIds: [],
+            mcpServers: [],
+            hooks: [],
+            skills: []
+        )
+    }
+    func toggleMcpServer(baseURL: URL, token: String, name: String, enabled: Bool) async throws -> Bool { enabled }
     func fetchConversations(baseURL: URL, token: String, query: String) async throws -> [ConversationSummary] { [] }
     func fetchMessages(baseURL: URL, token: String, conversationId: String) async throws -> MessagesEnvelope {
+        throw BridgeClientError.notConfigured
+    }
+    func renameConversation(baseURL: URL, token: String, conversationId: String, title: String) async throws -> ConversationSummary {
         throw BridgeClientError.notConfigured
     }
     func abortRun(baseURL: URL, token: String, conversationId: String) async throws -> Bool { true }
@@ -51,7 +68,7 @@ final class BridgeTests: XCTestCase {
         XCTAssertNil(BridgeConfiguration.normalizedBaseURL(from: "ftp://invalid.host"))
     }
 
-    func testMarkdownSegmentParsesFencedCodeBlocks() {
+    func testMarkdownSegmentAndToolSummaryHelpers() {
         let input = """
         检查状态：
 
@@ -66,14 +83,19 @@ final class BridgeTests: XCTestCase {
         XCTAssertEqual(segments[0], .prose(id: 0, text: "检查状态："))
         XCTAssertEqual(segments[1], .codeBlock(id: 1, language: "bash", code: "npm run check"))
         XCTAssertEqual(segments[2], .prose(id: 2, text: "全部通过"))
+
+        let call = ToolCallSummary(name: "run_command", argsPreview: #"{"CommandLine":"git status"}"#)
+        XCTAssertEqual(call.readableSummary, "git status")
+
+        let model = ModelInfo(id: "gemini-3.8-flash-medium", displayName: "Gemini 3.8 Flash (Medium)")
+        XCTAssertEqual(model.compactName, "3.8 Flash M")
     }
 
     func testDecodeBridgeStreamEvents() throws {
-        let deltaJSON = #"{"type":"run.delta","runId":"r1","conversationId":"c1","stepIndex":2,"textDelta":"你好"}"#
-        let decoded = try JSONDecoder().decode(BridgeStreamEvent.self, from: Data(deltaJSON.utf8))
-        XCTAssertEqual(decoded.type, "run.delta")
-        XCTAssertEqual(decoded.conversationId, "c1")
-        XCTAssertEqual(decoded.textDelta, "你好")
+        let stepJSON = #"{"type":"run.step","runId":"r1","conversationId":"c1","stepIndex":2,"stepType":"tool","state":"ACTIVE","toolName":"run_command","toolParameters":"{\"CommandLine\":\"ls\"}"}"#
+        let decoded = try JSONDecoder().decode(BridgeStreamEvent.self, from: Data(stepJSON.utf8))
+        XCTAssertEqual(decoded.type, "run.step")
+        XCTAssertEqual(decoded.toolName, "run_command")
     }
 
     @MainActor
@@ -93,7 +115,6 @@ final class BridgeTests: XCTestCase {
             demoMode: false
         )
 
-        // Simulate new conversation streaming sequence deterministically without background DemoBridgeService emissions
         await store.sendPrompt(text: "列出目录", conversationId: nil)
         XCTAssertNotNil(store.pendingNewRun)
 
@@ -111,6 +132,9 @@ final class BridgeTests: XCTestCase {
                 textDelta: nil,
                 stepType: nil,
                 state: nil,
+                toolName: nil,
+                toolParameters: nil,
+                toolOutputPreview: nil,
                 status: nil,
                 response: nil,
                 durationSeconds: nil,
@@ -120,6 +144,32 @@ final class BridgeTests: XCTestCase {
         )
         XCTAssertEqual(store.selectedConversationID, "conv-new")
         XCTAssertEqual(store.messagesByConversation["conv-new"]?.count, 2)
+
+        store.handleStreamEvent(
+            BridgeStreamEvent(
+                type: "run.step",
+                online: nil,
+                connectedAt: nil,
+                requestId: nil,
+                runId: "run-new",
+                conversationId: "conv-new",
+                model: nil,
+                cwd: nil,
+                stepIndex: 2,
+                textDelta: nil,
+                stepType: "tool",
+                state: "ACTIVE",
+                toolName: "run_command",
+                toolParameters: #"{"CommandLine":"ls"}"#,
+                toolOutputPreview: nil,
+                status: nil,
+                response: nil,
+                durationSeconds: nil,
+                message: nil,
+                usage: nil
+            )
+        )
+        XCTAssertEqual(store.liveStepByConversation["conv-new"]?.toolName, "run_command")
 
         store.handleStreamEvent(
             BridgeStreamEvent(
@@ -135,6 +185,9 @@ final class BridgeTests: XCTestCase {
                 textDelta: "已执行完成",
                 stepType: nil,
                 state: nil,
+                toolName: nil,
+                toolParameters: nil,
+                toolOutputPreview: nil,
                 status: nil,
                 response: nil,
                 durationSeconds: nil,
@@ -158,6 +211,9 @@ final class BridgeTests: XCTestCase {
                 textDelta: nil,
                 stepType: nil,
                 state: nil,
+                toolName: nil,
+                toolParameters: nil,
+                toolOutputPreview: nil,
                 status: nil,
                 response: nil,
                 durationSeconds: nil,
@@ -167,5 +223,6 @@ final class BridgeTests: XCTestCase {
         )
         XCTAssertEqual(store.messagesByConversation["conv-new"]?.last?.status, "ABORTED")
         XCTAssertNil(store.activeStreamingRuns["conv-new"])
+        XCTAssertNil(store.liveStepByConversation["conv-new"])
     }
 }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @Bindable var store: AppStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var navigationPath: [String] = []
     @State private var showingSettings = false
     @State private var showingNewSession = false
@@ -27,6 +28,11 @@ struct RootView: View {
             if store.isConfigured {
                 store.connectStream()
                 await store.refreshDashboard()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                Task { await store.handleForegroundReturn() }
             }
         }
         .onChange(of: store.selectedConversationID) { _, newID in

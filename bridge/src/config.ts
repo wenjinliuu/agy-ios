@@ -20,9 +20,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   const authToken = (env.BRIDGE_AUTH_TOKEN || "").trim();
   const relayAuthToken = (env.RELAY_AUTH_TOKEN || authToken).trim();
 
+  const parsedPort = Number.parseInt(env.BRIDGE_PORT ?? "8787", 10);
+
   return {
     bindHost: (env.BRIDGE_BIND_HOST || "127.0.0.1").trim(),
-    port: Number.parseInt(env.BRIDGE_PORT || "8787", 10) || 8787,
+    port: Number.isFinite(parsedPort) && parsedPort >= 0 ? parsedPort : 8787,
     authToken,
     relayWsUrl: (env.RELAY_WS_URL || "").trim(),
     relayAuthToken,

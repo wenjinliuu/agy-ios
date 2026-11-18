@@ -14,6 +14,7 @@ export function startRelayClient(deps: RouterDeps): RelayClientHandle {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let backoffMs = 1000;
+  let lastActivityAt = Date.now();
 
   const sendWire = (message: RelayWireMessage) => {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -52,6 +53,8 @@ export function startRelayClient(deps: RouterDeps): RelayClientHandle {
 
     ws.on("open", () => {
       backoffMs = 1000;
+      lastActivityAt = Date.now();
+      console.log("[agy-bridge] relay connected");
       sendWire({
         kind: "vps_hello",
         bridgeVersion: "0.1.0",
@@ -62,13 +65,20 @@ export function startRelayClient(deps: RouterDeps): RelayClientHandle {
         clearInterval(pingTimer);
       }
       pingTimer = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send("ping");
+        if (ws.readyState !== WebSocket.OPEN) {
+          return;
         }
-      }, 25_000);
+        if (Date.now() - lastActivityAt > 50_000) {
+          console.warn("[agy-bridge] relay pong watchdog expired; terminating socket to reconnect");
+          ws.terminate();
+          return;
+        }
+        ws.send("ping");
+      }, 20_000);
     });
 
     ws.on("message", async (data) => {
+      lastActivityAt = Date.now();
       const text = data.toString();
       if (!text || text === "pong" || text === "ping") {
         return;
@@ -122,7 +132,8 @@ export function startRelayClient(deps: RouterDeps): RelayClientHandle {
       }
     });
 
-    ws.on("close", () => {
+    ws.on("close", (code, reason) => {
+      console.warn(`[agy-bridge] relay closed (code=${code}, reason=${reason.toString() || "none"})`);
       if (pingTimer) {
         clearInterval(pingTimer);
         pingTimer = null;
@@ -133,8 +144,8 @@ export function startRelayClient(deps: RouterDeps): RelayClientHandle {
       scheduleReconnect();
     });
 
-    ws.on("error", () => {
-      // Close event handles cleanup and reconnect backoff.
+    ws.on("error", (err) => {
+      console.error("[agy-bridge] relay socket error:", err.message);
     });
   };
 

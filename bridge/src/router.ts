@@ -55,6 +55,42 @@ export async function handleApiRequest(
     });
   }
 
+  if (method === "GET" && pathname === "/v1/config/overview") {
+    const agyVersion = await deps.runner.getVersion();
+    const overview = deps.store.readSafeConfigOverview();
+    return json(200, {
+      agyVersion,
+      bridgeVersion: "0.1.0",
+      hostname: deps.config.hostname,
+      defaultWorkspace: deps.config.defaultWorkspace,
+      defaultModel: deps.config.defaultModel || null,
+      activeConversationIds: [...deps.runner.getActiveConversationIds()],
+      ...overview,
+    });
+  }
+
+  const toggleMcpMatch = pathname.match(/^\/v1\/config\/mcp\/([^/]+)\/toggle$/);
+  if (method === "POST" && toggleMcpMatch) {
+    const name = decodeURIComponent(toggleMcpMatch[1]);
+    let body: { enabled?: boolean };
+    try {
+      body = JSON.parse(req.body || "{}") as { enabled?: boolean };
+    } catch {
+      return json(400, { error: "Invalid JSON body" });
+    }
+    if (typeof body.enabled !== "boolean") {
+      return json(400, { error: "enabled boolean is required" });
+    }
+    try {
+      await deps.runner.toggleMcpServer(name, body.enabled);
+      return json(200, { ok: true, name, enabled: body.enabled });
+    } catch (err) {
+      return json(400, {
+        error: err instanceof Error ? err.message : "Failed to toggle MCP server",
+      });
+    }
+  }
+
   if (method === "GET" && pathname === "/v1/models") {
     try {
       const refresh = url.searchParams.get("refresh") === "1";
@@ -115,6 +151,31 @@ export async function handleApiRequest(
     }
     const aborted = deps.runner.abortConversation(cid);
     return json(200, { aborted, conversationId: cid });
+  }
+
+  const titleMatch = pathname.match(/^\/v1\/conversations\/([^/]+)\/title$/);
+  if (method === "POST" && titleMatch) {
+    const cid = decodeURIComponent(titleMatch[1]);
+    if (!isValidConversationId(cid)) {
+      return json(400, { error: "Invalid conversation ID" });
+    }
+    let body: { title?: string };
+    try {
+      body = JSON.parse(req.body || "{}") as { title?: string };
+    } catch {
+      return json(400, { error: "Invalid JSON body" });
+    }
+    try {
+      const updated = deps.store.renameConversationTitle(cid, body.title || "");
+      if (!updated) {
+        return json(404, { error: "Conversation not found" });
+      }
+      return json(200, { conversation: updated });
+    } catch (err) {
+      return json(400, {
+        error: err instanceof Error ? err.message : "Failed to update title",
+      });
+    }
   }
 
   if (method === "POST" && pathname === "/v1/conversations/send") {

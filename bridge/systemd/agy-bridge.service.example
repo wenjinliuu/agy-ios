@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/ubuntu/projects/agy-ios/bridge
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=/home/ubuntu/projects/agy-ios/bridge/.env
 ExecStart=/usr/bin/node /home/ubuntu/projects/agy-ios/bridge/src/index.ts
 Restart=always

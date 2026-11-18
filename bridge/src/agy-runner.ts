@@ -28,6 +28,13 @@ interface RawStreamLine {
     step_type?: string;
     text_delta?: string;
     thinking_delta?: string;
+    tool_name?: string;
+    duration_seconds?: number;
+    tool_info?: {
+      name?: string;
+      parameters?: unknown;
+      output?: string;
+    };
     error?: unknown;
     usage?: {
       input_tokens?: number;
@@ -307,6 +314,23 @@ export class AgyRunner extends EventEmitter {
             });
           }
           if (update.state || update.step_type) {
+            const toolName = update.tool_name || update.tool_info?.name;
+            let toolParameters: string | undefined;
+            if (update.tool_info?.parameters !== undefined) {
+              try {
+                const rawParams = JSON.stringify(update.tool_info.parameters);
+                toolParameters =
+                  rawParams.length > 240 ? `${rawParams.slice(0, 237)}...` : rawParams;
+              } catch {
+                // Ignore non-serializable params.
+              }
+            }
+            const rawOut = update.tool_info?.output;
+            const toolOutputPreview =
+              typeof rawOut === "string" && rawOut.trim()
+                ? rawOut.trim().slice(0, 280)
+                : undefined;
+
             this.emitBridgeEvent({
               type: "run.step",
               runId,
@@ -314,6 +338,10 @@ export class AgyRunner extends EventEmitter {
               stepIndex: update.step_index ?? 0,
               stepType: update.step_type || "unknown",
               state: update.state || "ACTIVE",
+              toolName,
+              toolParameters,
+              toolOutputPreview,
+              durationSeconds: update.duration_seconds,
               usage: mapUsage(update.usage),
             });
           }
@@ -395,6 +423,27 @@ export class AgyRunner extends EventEmitter {
     }, 3000);
     forceTimer.unref();
     return true;
+  }
+
+  async toggleMcpServer(name: string, enabled: boolean): Promise<void> {
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+      throw new Error("Invalid MCP server name");
+    }
+    const subcommand = enabled ? "enable" : "disable";
+    return new Promise((resolve, reject) => {
+      execFile(
+        this.agyBin,
+        ["mcp", subcommand, name],
+        { timeout: 10_000 },
+        (err, _stdout, stderr) => {
+          if (err) {
+            reject(new Error(stderr.trim() || err.message));
+            return;
+          }
+          resolve();
+        },
+      );
+    });
   }
 
   private cleanupRun(runId: string): void {

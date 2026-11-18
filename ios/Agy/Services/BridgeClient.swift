@@ -21,8 +21,11 @@ protocol BridgeServicing: Sendable {
     func checkHealth(baseURL: URL, token: String) async throws -> BridgeHealth
     func fetchModels(baseURL: URL, token: String) async throws -> [ModelInfo]
     func fetchWorkspaces(baseURL: URL, token: String) async throws -> [String]
+    func fetchConfigOverview(baseURL: URL, token: String) async throws -> ConfigOverview
+    func toggleMcpServer(baseURL: URL, token: String, name: String, enabled: Bool) async throws -> Bool
     func fetchConversations(baseURL: URL, token: String, query: String) async throws -> [ConversationSummary]
     func fetchMessages(baseURL: URL, token: String, conversationId: String) async throws -> MessagesEnvelope
+    func renameConversation(baseURL: URL, token: String, conversationId: String, title: String) async throws -> ConversationSummary
     func abortRun(baseURL: URL, token: String, conversationId: String) async throws -> Bool
     func openStream(baseURL: URL, token: String) -> AsyncThrowingStream<BridgeStreamEvent, Error>
     func sendPrompt(_ payload: SendPromptRequest, baseURL: URL, token: String) async throws
@@ -129,6 +132,25 @@ final class LiveBridgeService: BridgeServicing, @unchecked Sendable {
         return envelope.workspaces
     }
 
+    func fetchConfigOverview(baseURL: URL, token: String) async throws -> ConfigOverview {
+        let req = try authorizedRequest(baseURL: baseURL, path: "/v1/config/overview", token: token)
+        return try await perform(req)
+    }
+
+    func toggleMcpServer(baseURL: URL, token: String, name: String, enabled: Bool) async throws -> Bool {
+        let body = try JSONSerialization.data(withJSONObject: ["enabled": enabled])
+        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        let req = try authorizedRequest(
+            baseURL: baseURL,
+            path: "/v1/config/mcp/\(encodedName)/toggle",
+            token: token,
+            method: "POST",
+            body: body
+        )
+        let resp: ToggleMcpResponse = try await perform(req)
+        return resp.enabled
+    }
+
     func fetchConversations(baseURL: URL, token: String, query: String) async throws -> [ConversationSummary] {
         var items = [URLQueryItem(name: "limit", value: "50")]
         if !query.isEmpty {
@@ -152,6 +174,19 @@ final class LiveBridgeService: BridgeServicing, @unchecked Sendable {
             queryItems: [URLQueryItem(name: "limit", value: "200")]
         )
         return try await perform(req)
+    }
+
+    func renameConversation(baseURL: URL, token: String, conversationId: String, title: String) async throws -> ConversationSummary {
+        let body = try JSONSerialization.data(withJSONObject: ["title": title])
+        let req = try authorizedRequest(
+            baseURL: baseURL,
+            path: "/v1/conversations/\(conversationId)/title",
+            token: token,
+            method: "POST",
+            body: body
+        )
+        let envelope: RenameTitleEnvelope = try await perform(req)
+        return envelope.conversation
     }
 
     func abortRun(baseURL: URL, token: String, conversationId: String) async throws -> Bool {
@@ -231,13 +266,7 @@ final class LiveBridgeService: BridgeServicing, @unchecked Sendable {
 
     func sendPrompt(_ payload: SendPromptRequest, baseURL: URL, token: String) async throws {
         let data = try encoder.encode(payload)
-        if let active = await wsHub.currentTask(), active.state == .running,
-           let text = String(data: data, encoding: .utf8) {
-            try await wsHub.sendText(text)
-            return
-        }
-
-        // Fallback to REST POST if WebSocket is reconnecting
+        // Prefer REST POST for reliable HTTP status delivery, while streaming output over WS.
         let req = try authorizedRequest(
             baseURL: baseURL,
             path: "/v1/conversations/send",
@@ -278,6 +307,29 @@ final class DemoBridgeService: BridgeServicing, @unchecked Sendable {
 
     func fetchWorkspaces(baseURL: URL, token: String) async throws -> [String] {
         ["/home/ubuntu/projects/agy-ios", "/home/ubuntu/projects/agy-vps-kit"]
+    }
+
+    func fetchConfigOverview(baseURL: URL, token: String) async throws -> ConfigOverview {
+        ConfigOverview(
+            agyVersion: "1.5.10",
+            bridgeVersion: "0.1.0-demo",
+            hostname: "vps-demo",
+            defaultWorkspace: "/home/ubuntu/projects/agy-ios",
+            defaultModel: "gemini-3.8-flash-medium",
+            activeConversationIds: [],
+            mcpServers: [
+                McpServerSummary(name: "github", transport: "http", enabled: true, target: "https://api.githubcopilot.com/mcp/"),
+                McpServerSummary(name: "cloudflare", transport: "http", enabled: true, target: "https://mcp.cloudflare.com/mcp"),
+            ],
+            hooks: [
+                HookSummary(event: "Stop", name: "auto-zh-title", enabled: true),
+            ],
+            skills: ["ios-ci-workflows", "swarm"]
+        )
+    }
+
+    func toggleMcpServer(baseURL: URL, token: String, name: String, enabled: Bool) async throws -> Bool {
+        enabled
     }
 
     func fetchConversations(baseURL: URL, token: String, query: String) async throws -> [ConversationSummary] {
@@ -347,6 +399,12 @@ final class DemoBridgeService: BridgeServicing, @unchecked Sendable {
         return MessagesEnvelope(conversation: conv, messages: msgs)
     }
 
+    func renameConversation(baseURL: URL, token: String, conversationId: String, title: String) async throws -> ConversationSummary {
+        var conv = try await fetchMessages(baseURL: baseURL, token: token, conversationId: conversationId).conversation
+        conv.title = title
+        return conv
+    }
+
     func abortRun(baseURL: URL, token: String, conversationId: String) async throws -> Bool {
         true
     }
@@ -369,6 +427,9 @@ final class DemoBridgeService: BridgeServicing, @unchecked Sendable {
                         textDelta: nil,
                         stepType: nil,
                         state: nil,
+                        toolName: nil,
+                        toolParameters: nil,
+                        toolOutputPreview: nil,
                         status: nil,
                         response: nil,
                         durationSeconds: nil,
@@ -407,6 +468,9 @@ final class DemoBridgeService: BridgeServicing, @unchecked Sendable {
                 textDelta: nil,
                 stepType: nil,
                 state: nil,
+                toolName: nil,
+                toolParameters: nil,
+                toolOutputPreview: nil,
                 status: nil,
                 response: nil,
                 durationSeconds: nil,
@@ -428,6 +492,9 @@ final class DemoBridgeService: BridgeServicing, @unchecked Sendable {
                 textDelta: "演示模式已收到指令：「\(payload.prompt)」",
                 stepType: nil,
                 state: nil,
+                toolName: nil,
+                toolParameters: nil,
+                toolOutputPreview: nil,
                 status: nil,
                 response: nil,
                 durationSeconds: nil,
@@ -449,6 +516,9 @@ final class DemoBridgeService: BridgeServicing, @unchecked Sendable {
                 textDelta: nil,
                 stepType: nil,
                 state: nil,
+                toolName: nil,
+                toolParameters: nil,
+                toolOutputPreview: nil,
                 status: "SUCCESS",
                 response: "演示模式已收到指令：「\(payload.prompt)」",
                 durationSeconds: 0.4,

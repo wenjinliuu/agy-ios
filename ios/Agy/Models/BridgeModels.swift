@@ -14,6 +14,45 @@ struct BridgeHealth: Codable, Sendable, Equatable {
 struct ModelInfo: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let displayName: String
+
+    var compactName: String {
+        displayName
+            .replacingOccurrences(of: "Gemini ", with: "")
+            .replacingOccurrences(of: "Claude ", with: "")
+            .replacingOccurrences(of: " (Medium)", with: " M")
+            .replacingOccurrences(of: " (High)", with: " H")
+            .replacingOccurrences(of: " (XHigh)", with: " XH")
+            .replacingOccurrences(of: " (Low)", with: " L")
+    }
+}
+
+struct McpServerSummary: Codable, Identifiable, Hashable, Sendable {
+    let name: String
+    let transport: String
+    var enabled: Bool
+    let target: String
+
+    var id: String { name }
+}
+
+struct HookSummary: Codable, Identifiable, Hashable, Sendable {
+    let event: String
+    let name: String
+    let enabled: Bool
+
+    var id: String { name }
+}
+
+struct ConfigOverview: Codable, Sendable, Equatable {
+    let agyVersion: String
+    let bridgeVersion: String
+    let hostname: String
+    let defaultWorkspace: String
+    let defaultModel: String?
+    let activeConversationIds: [String]
+    var mcpServers: [McpServerSummary]
+    let hooks: [HookSummary]
+    let skills: [String]
 }
 
 struct UsageStats: Codable, Hashable, Sendable {
@@ -22,6 +61,14 @@ struct UsageStats: Codable, Hashable, Sendable {
     let thinkingTokens: Int?
     let cacheReadTokens: Int?
     let totalTokens: Int?
+
+    var compactLabel: String? {
+        guard let out = outputTokens else { return nil }
+        if let inp = inputTokens {
+            return "↑\(inp) ↓\(out) tok"
+        }
+        return "↓\(out) tok"
+    }
 }
 
 struct ToolCallSummary: Codable, Hashable, Identifiable, Sendable {
@@ -29,11 +76,26 @@ struct ToolCallSummary: Codable, Hashable, Identifiable, Sendable {
     let argsPreview: String
 
     var id: String { "\(name):\(argsPreview)" }
+
+    var readableSummary: String {
+        guard !argsPreview.isEmpty,
+              let data = argsPreview.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return argsPreview
+        }
+        let priorityKeys = ["CommandLine", "Path", "TargetFile", "query", "Message", "Prompt", "RepoName", "repo"]
+        for key in priorityKeys {
+            if let val = json[key] as? String, !val.isEmpty {
+                return val
+            }
+        }
+        return argsPreview
+    }
 }
 
 struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     let id: String
-    let title: String
+    var title: String
     let preview: String
     let stepCount: Int
     let status: String
@@ -71,6 +133,15 @@ struct ChatMessage: Codable, Identifiable, Hashable, Sendable {
     var usage: UsageStats?
 }
 
+struct LiveStepStatus: Equatable, Sendable {
+    let stepIndex: Int
+    let stepType: String
+    let state: String
+    let toolName: String?
+    let toolParameters: String?
+    let toolOutputPreview: String?
+}
+
 enum EffortLevel: String, CaseIterable, Codable, Identifiable, Sendable {
     case low
     case medium
@@ -82,7 +153,7 @@ enum EffortLevel: String, CaseIterable, Codable, Identifiable, Sendable {
     var label: String {
         switch self {
         case .low: return "Low"
-        case .medium: return "Medium"
+        case .medium: return "Med"
         case .high: return "High"
         case .xhigh: return "XHigh"
         }
@@ -99,7 +170,7 @@ enum AgentMode: String, CaseIterable, Codable, Identifiable, Sendable {
     var label: String {
         switch self {
         case .auto: return "自动执行"
-        case .acceptEdits: return "自动改文件"
+        case .acceptEdits: return "仅改文件"
         case .plan: return "只读规划"
         }
     }
@@ -151,6 +222,9 @@ struct BridgeStreamEvent: Decodable, Sendable {
     let textDelta: String?
     let stepType: String?
     let state: String?
+    let toolName: String?
+    let toolParameters: String?
+    let toolOutputPreview: String?
     let status: String?
     let response: String?
     let durationSeconds: Double?
@@ -160,6 +234,16 @@ struct BridgeStreamEvent: Decodable, Sendable {
 
 struct ConversationsEnvelope: Decodable, Sendable {
     let conversations: [ConversationSummary]
+}
+
+struct RenameTitleEnvelope: Decodable, Sendable {
+    let conversation: ConversationSummary
+}
+
+struct ToggleMcpResponse: Decodable, Sendable {
+    let ok: Bool
+    let name: String
+    let enabled: Bool
 }
 
 struct MessagesEnvelope: Decodable, Sendable {

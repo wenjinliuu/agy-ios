@@ -18,6 +18,9 @@ final class AgyUITests: XCTestCase {
         let inputElement = app.descendants(matching: .any)["chat-prompt-input"].firstMatch
         XCTAssertTrue(inputElement.waitForExistence(timeout: 5))
 
+        let modelPicker = app.descendants(matching: .any)["composer-model-picker"].firstMatch
+        XCTAssertTrue(modelPicker.waitForExistence(timeout: 5))
+
         let thinkingToggle = app.descendants(matching: .any)["thinking-disclosure-1"].firstMatch
         if thinkingToggle.waitForExistence(timeout: 3) {
             thinkingToggle.tap()

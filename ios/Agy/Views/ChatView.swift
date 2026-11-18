@@ -5,6 +5,8 @@ struct ChatView: View {
     let conversationID: String
 
     @State private var draftPrompt: String = ""
+    @State private var showingRenameAlert: Bool = false
+    @State private var renameDraft: String = ""
     @FocusState private var composerFocused: Bool
 
     private var conversation: ConversationSummary? {
@@ -15,28 +17,49 @@ struct ChatView: View {
         store.messagesByConversation[conversationID] ?? []
     }
 
+    private var messagesError: String? {
+        store.messagesErrorByConversation[conversationID]
+    }
+
+    private var liveStep: LiveStepStatus? {
+        store.liveStepByConversation[conversationID]
+    }
+
     private var isStreaming: Bool {
         store.activeStreamingRuns[conversationID] != nil || (conversation?.isRunning ?? false)
     }
 
+    private var selectedModelCompactName: String {
+        store.models.first(where: { $0.id == store.selectedModelID })?.compactName ?? store.selectedModelID
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            if let errorText = messagesError, !errorText.isEmpty {
+                errorBanner(text: errorText)
+            } else if !store.bridgeOnline && !store.isDemoMode {
+                offlineBanner
+            }
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         if store.isLoadingMessages && messages.isEmpty {
-                            ProgressView("正在载入对话...")
-                                .frame(maxWidth: .infinity, minHeight: 160)
+                            ProgressView("正在载入对话记录...")
+                                .frame(maxWidth: .infinity, minHeight: 180)
                         } else if messages.isEmpty {
                             ContentUnavailableView(
-                                "暂无消息内容",
-                                systemImage: "text.bubble",
-                                description: Text("在下方输入指令，继续在这个会话中执行任务。")
+                                messagesError == nil ? "暂无消息内容" : "对话加载失败",
+                                systemImage: messagesError == nil ? "text.bubble" : "wifi.exclamationmark",
+                                description: Text(messagesError ?? "在下方输入指令，继续在这个会话中执行任务。")
                             )
                         } else {
                             ForEach(messages) { message in
-                                MessageBubble(message: message)
-                                    .id(message.id)
+                                MessageBubble(
+                                    message: message,
+                                    liveStep: (message.status == "ACTIVE" && message.role == .assistant) ? liveStep : nil
+                                )
+                                .id(message.id)
                             }
                         }
                     }
@@ -44,42 +67,50 @@ struct ChatView: View {
                     .padding(.vertical, 12)
                 }
                 .onChange(of: messages.count) { _, _ in
-                    if let lastID = messages.last?.id {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            proxy.scrollTo(lastID, anchor: .bottom)
-                        }
-                    }
+                    scrollToBottom(proxy: proxy)
+                }
+                .onChange(of: messages.last?.content) { _, _ in
+                    scrollToBottom(proxy: proxy)
                 }
             }
 
             Divider()
-            composerBar
+            composerDock
         }
         .navigationTitle(conversation?.title ?? "对话")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Picker("模型", selection: $store.selectedModelID) {
-                        ForEach(store.models) { model in
-                            Text(model.displayName).tag(model.id)
-                        }
-                    }
-                    Picker("思考强度", selection: $store.selectedEffort) {
-                        ForEach(EffortLevel.allCases) { level in
-                            Text(level.label).tag(level)
-                        }
-                    }
-                    Picker("执行模式", selection: $store.selectedMode) {
-                        ForEach(AgentMode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    renameDraft = conversation?.title ?? ""
+                    showingRenameAlert = true
                 } label: {
-                    Image(systemName: "slider.horizontal.3")
+                    Image(systemName: "pencil")
                 }
-                .accessibilityLabel("调整模型与参数")
-                .accessibilityIdentifier("chat-options-menu")
+                .accessibilityLabel("重命名对话")
+
+                Button {
+                    Task { await store.loadMessages(for: conversationID) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("刷新消息")
+            }
+        }
+        .alert("重命名对话", isPresented: $showingRenameAlert) {
+            TextField("输入新标题", text: $renameDraft)
+            Button("取消", role: .cancel) {}
+            Button("保存") {
+                let text = renameDraft
+                Task { try? await store.renameConversation(id: conversationID, title: text) }
+            }
+        }
+        .onAppear {
+            store.activeViewingConversationID = conversationID
+        }
+        .onDisappear {
+            if store.activeViewingConversationID == conversationID {
+                store.activeViewingConversationID = nil
             }
         }
         .task(id: conversationID) {
@@ -90,29 +121,141 @@ struct ChatView: View {
         }
     }
 
-    private var composerBar: some View {
+    private func scrollToBottom(proxy: ScrollViewProxy) {
+        guard let lastID = messages.last?.id else { return }
+        withAnimation(.easeOut(duration: 0.18)) {
+            proxy.scrollTo(lastID, anchor: .bottom)
+        }
+    }
+
+    private func errorBanner(text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .lineLimit(2)
+            Spacer()
+            Button("重试") {
+                Task {
+                    await store.handleForegroundReturn()
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.bordered)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.red.opacity(0.08))
+    }
+
+    private var offlineBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "bolt.horizontal.circle")
+                .foregroundStyle(.orange)
+            Text("实时通道重连中，消息可能延迟到达")
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Spacer()
+            Button("重连") {
+                store.connectStream()
+            }
+            .font(.caption.weight(.semibold))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color.orange.opacity(0.08))
+    }
+
+    private var composerDock: some View {
         VStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Text(store.selectedModelID)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text("·")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Text(store.selectedEffort.label)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if let ws = conversation?.workspaceDisplayName {
-                    Label(ws, systemImage: "folder")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            // Controls right inside the bottom composer dock (matching official Web UI)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Menu {
+                        ForEach(store.models) { model in
+                            Button {
+                                store.selectedModelID = model.id
+                            } label: {
+                                if model.id == store.selectedModelID {
+                                    Label(model.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(model.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        ComposerChip(icon: "cpu", text: selectedModelCompactName)
+                    }
+                    .accessibilityLabel("选择模型")
+                    .accessibilityIdentifier("composer-model-picker")
+
+                    Menu {
+                        ForEach(EffortLevel.allCases) { level in
+                            Button {
+                                store.selectedEffort = level
+                            } label: {
+                                if level == store.selectedEffort {
+                                    Label(level.label, systemImage: "checkmark")
+                                } else {
+                                    Text(level.label)
+                                }
+                            }
+                        }
+                    } label: {
+                        ComposerChip(icon: "brain.head.profile", text: store.selectedEffort.label)
+                    }
+                    .accessibilityLabel("调整思考强度")
+
+                    Menu {
+                        ForEach(AgentMode.allCases) { mode in
+                            Button {
+                                store.selectedMode = mode
+                            } label: {
+                                if mode == store.selectedMode {
+                                    Label(mode.label, systemImage: "checkmark")
+                                } else {
+                                    Text(mode.label)
+                                }
+                            }
+                        }
+                    } label: {
+                        ComposerChip(icon: "shield.lefthalf.filled", text: store.selectedMode.label)
+                    }
+                    .accessibilityLabel("切换执行模式")
+
+                    Button {
+                        store.autoSkipPermissions.toggle()
+                    } label: {
+                        ComposerChip(
+                            icon: store.autoSkipPermissions ? "bolt.fill" : "hand.raised",
+                            text: store.autoSkipPermissions ? "自动授权" : "保守确认",
+                            highlighted: store.autoSkipPermissions
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    if let ws = conversation?.workspaceDisplayName {
+                        ComposerChip(icon: "folder", text: ws)
+                    }
                 }
             }
 
-            HStack(alignment: .bottom, spacing: 10) {
+            HStack(alignment: .bottom, spacing: 8) {
+                Menu {
+                    Button("继续完成当前任务") { appendQuickPrompt("请继续完成上面的任务") }
+                    Button("检查 git status 与改动") { appendQuickPrompt("帮我看一下当前仓库的 git status 和改动") }
+                    Button("解释问题并给出修复方案") { appendQuickPrompt("请分析刚才报错的根因并给出具体修改方案") }
+                    Button("总结当前进展") { appendQuickPrompt("用中文简要总结目前的进度和下一步建议") }
+                } label: {
+                    Image(systemName: "slash.circle")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 40)
+                }
+                .accessibilityLabel("常用快捷指令")
+
                 TextField("给 agy 发消息...", text: $draftPrompt, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1 ... 6)
@@ -160,10 +303,43 @@ struct ChatView: View {
         .padding(.vertical, 8)
         .background(.bar)
     }
+
+    private func appendQuickPrompt(_ preset: String) {
+        if draftPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draftPrompt = preset
+        } else {
+            draftPrompt += "\n" + preset
+        }
+        composerFocused = true
+    }
+}
+
+private struct ComposerChip: View {
+    let icon: String
+    let text: String
+    var highlighted: Bool = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.caption2)
+            Text(text)
+                .font(.caption2.weight(.medium))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(
+            highlighted ? Color.accentColor.opacity(0.16) : Color(.secondarySystemFill),
+            in: Capsule()
+        )
+        .foregroundStyle(highlighted ? Color.accentColor : Color.primary)
+    }
 }
 
 private struct MessageBubble: View {
     let message: ChatMessage
+    let liveStep: LiveStepStatus?
     @State private var showThinking = false
     @State private var showTools = false
 
@@ -178,8 +354,31 @@ private struct MessageBubble: View {
                         .padding(.vertical, 10)
                         .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 16))
                 }
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = message.content
+                    } label: {
+                        Label("复制内容", systemImage: "doc.on.doc")
+                    }
+                }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
+                    if message.model != nil || message.usage?.compactLabel != nil {
+                        HStack(spacing: 6) {
+                            if let model = message.model, !model.isEmpty {
+                                Text(model)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let tok = message.usage?.compactLabel {
+                                Text(tok)
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
                     if let thinking = message.thinking, !thinking.isEmpty {
                         DisclosureGroup("思考过程", isExpanded: $showThinking) {
                             Text(thinking)
@@ -196,14 +395,14 @@ private struct MessageBubble: View {
                     }
 
                     if !message.toolCalls.isEmpty {
-                        DisclosureGroup("调用工具 (\(message.toolCalls.count))", isExpanded: $showTools) {
-                            VStack(alignment: .leading, spacing: 6) {
+                        DisclosureGroup("工具调用 (\(message.toolCalls.count))", isExpanded: $showTools) {
+                            VStack(alignment: .leading, spacing: 8) {
                                 ForEach(message.toolCalls) { call in
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(call.name)
+                                        Label(call.name, systemImage: "wrench.and.screwdriver")
                                             .font(.caption.monospaced().weight(.semibold))
-                                        if !call.argsPreview.isEmpty {
-                                            Text(call.argsPreview)
+                                        if !call.readableSummary.isEmpty {
+                                            Text(call.readableSummary)
                                                 .font(.caption2.monospaced())
                                                 .foregroundStyle(.secondary)
                                                 .lineLimit(3)
@@ -219,6 +418,10 @@ private struct MessageBubble: View {
                         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                     }
 
+                    if let liveStep, message.status == "ACTIVE" {
+                        liveExecutionBadge(liveStep)
+                    }
+
                     if !message.content.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(MarkdownSegment.parse(message.content)) { segment in
@@ -231,10 +434,10 @@ private struct MessageBubble: View {
                                 }
                             }
                         }
-                    } else if message.status == "ACTIVE" {
+                    } else if message.status == "ACTIVE" && liveStep == nil {
                         HStack(spacing: 8) {
                             ProgressView()
-                            Text("正在生成...")
+                            Text("正在连接模型思考...")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -246,9 +449,41 @@ private struct MessageBubble: View {
                             .foregroundStyle(.red)
                     }
                 }
+                .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.secondarySystemBackground).opacity(0.45), in: RoundedRectangle(cornerRadius: 14))
+                .contextMenu {
+                    if !message.content.isEmpty {
+                        Button {
+                            UIPasteboard.general.string = message.content
+                        } label: {
+                            Label("复制回复全文", systemImage: "doc.on.doc")
+                        }
+                    }
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private func liveExecutionBadge(_ step: LiveStepStatus) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(step.toolName != nil ? "正在执行 \(step.toolName!)" : "步骤 \(step.stepIndex) · \(step.stepType)")
+                    .font(.caption.weight(.medium))
+                if let params = step.toolParameters, !params.isEmpty {
+                    Text(params)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
     }
 
     @ViewBuilder

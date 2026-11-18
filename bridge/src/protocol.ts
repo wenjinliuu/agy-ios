@@ -43,6 +43,31 @@ export interface ModelInfo {
   displayName: string;
 }
 
+export interface McpServerSummary {
+  name: string;
+  transport: string;
+  enabled: boolean;
+  target: string;
+}
+
+export interface HookSummary {
+  event: string;
+  name: string;
+  enabled: boolean;
+}
+
+export interface ConfigOverview {
+  agyVersion: string;
+  bridgeVersion: string;
+  hostname: string;
+  defaultWorkspace: string;
+  defaultModel: string | null;
+  activeConversationIds: string[];
+  mcpServers: McpServerSummary[];
+  hooks: HookSummary[];
+  skills: string[];
+}
+
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 export type AgentMode = "accept-edits" | "auto" | "plan";
 
@@ -90,6 +115,10 @@ export type ServerToClientMessage =
       stepIndex: number;
       stepType: string;
       state: string;
+      toolName?: string;
+      toolParameters?: string;
+      toolOutputPreview?: string;
+      durationSeconds?: number;
       usage?: UsageStats;
     }
   | {

@@ -1,7 +1,14 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { ChatMessage, ConversationSummary, ToolCallSummary } from "./protocol.ts";
+import type {
+  ChatMessage,
+  ConversationSummary,
+  HookSummary,
+  McpServerSummary,
+  ToolCallSummary,
+} from "./protocol.ts";
 
 interface SummaryRow {
   conversation_id: string;
@@ -467,6 +474,153 @@ export class AgyStore {
       }
     }
     return [...result];
+  }
+
+  renameConversationTitle(
+    conversationId: string,
+    rawTitle: string,
+  ): ConversationSummary | null {
+    if (!isValidConversationId(conversationId)) {
+      return null;
+    }
+    const cleanTitle = rawTitle.replace(/[\r\n]+/g, " ").trim();
+    if (!cleanTitle) {
+      throw new Error("Title cannot be empty");
+    }
+
+    const escaped = cleanTitle
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"');
+    const annotationsDir = path.join(this.dataDir, "annotations");
+    fs.mkdirSync(annotationsDir, { recursive: true });
+    const pbtxtPath = path.join(annotationsDir, `${conversationId}.pbtxt`);
+
+    if (fs.existsSync(pbtxtPath)) {
+      const existing = fs.readFileSync(pbtxtPath, "utf8");
+      if (/title:\s*"(?:[^"\\]|\\.)*"/.test(existing)) {
+        fs.writeFileSync(
+          pbtxtPath,
+          existing.replace(/title:\s*"(?:[^"\\]|\\.)*"/, `title:"${escaped}"`),
+        );
+      } else {
+        fs.writeFileSync(pbtxtPath, `title:"${escaped}"  ${existing}`);
+      }
+    } else {
+      const nowSec = Math.floor(Date.now() / 1000);
+      fs.writeFileSync(
+        pbtxtPath,
+        `title:"${escaped}"  last_user_view_time:{seconds:${nowSec}  nanos:0}\n`,
+      );
+    }
+
+    if (fs.existsSync(this.dbPath)) {
+      const rwDb = new DatabaseSync(this.dbPath);
+      try {
+        rwDb
+          .prepare(
+            "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
+          )
+          .run(cleanTitle, conversationId);
+      } finally {
+        rwDb.close();
+      }
+    }
+
+    return this.getConversationSummary(conversationId);
+  }
+
+  readSafeConfigOverview(configDir = path.join(os.homedir(), ".gemini", "config")): {
+    mcpServers: McpServerSummary[];
+    hooks: HookSummary[];
+    skills: string[];
+  } {
+    const mcpServers: McpServerSummary[] = [];
+    const mcpPath = path.join(configDir, "mcp_config.json");
+    if (fs.existsSync(mcpPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(mcpPath, "utf8")) as {
+          mcpServers?: Record<
+            string,
+            {
+              disabled?: boolean;
+              serverUrl?: string;
+              url?: string;
+              command?: string;
+              type?: string;
+            }
+          >;
+        };
+        for (const [name, entry] of Object.entries(parsed.mcpServers || {})) {
+          const rawUrl = entry.serverUrl || entry.url;
+          let target = "";
+          if (rawUrl) {
+            try {
+              const u = new URL(rawUrl);
+              target = `${u.origin}${u.pathname}`;
+            } catch {
+              target = "http-endpoint";
+            }
+          } else if (entry.command) {
+            target = path.basename(entry.command);
+          }
+          mcpServers.push({
+            name,
+            transport: rawUrl ? "http" : entry.type || "stdio",
+            enabled: entry.disabled !== true,
+            target,
+          });
+        }
+      } catch {
+        // Ignore malformed config rather than failing the endpoint.
+      }
+    }
+
+    const hooks: HookSummary[] = [];
+    const hooksPath = path.join(configDir, "hooks.json");
+    if (fs.existsSync(hooksPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(hooksPath, "utf8")) as Record<
+          string,
+          unknown
+        >;
+        for (const [name, value] of Object.entries(parsed)) {
+          if (value && typeof value === "object") {
+            hooks.push({
+              name,
+              event: Object.keys(value as Record<string, unknown>).join(", "),
+              enabled: true,
+            });
+          }
+        }
+      } catch {
+        // Ignore malformed hooks.json.
+      }
+    }
+
+    const skillNames = new Set<string>();
+    for (const dir of [
+      path.join(this.dataDir, "builtin", "skills"),
+      path.join(path.dirname(this.dataDir), "skills"),
+    ]) {
+      if (!fs.existsSync(dir)) {
+        continue;
+      }
+      try {
+        for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (item.isDirectory()) {
+            skillNames.add(item.name);
+          }
+        }
+      } catch {
+        // Ignore unreadable skills directories.
+      }
+    }
+
+    return {
+      mcpServers: mcpServers.sort((a, b) => a.name.localeCompare(b.name)),
+      hooks: hooks.sort((a, b) => a.name.localeCompare(b.name)),
+      skills: [...skillNames].sort(),
+    };
   }
 
   private readJsonl(filePath: string): TranscriptEntry[] {

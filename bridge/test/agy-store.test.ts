@@ -144,6 +144,32 @@ test("AgyStore reads SQLite summaries, pbtxt titles, and hydrates truncated tran
     assert.equal(messages[1].thinking, "Checking files first");
     assert.equal(messages[1].toolCalls[0].name, "view_file");
     assert.equal(messages[1].content, "Done reading.");
+
+    const renamed = store.renameConversationTitle(cid, "手动改名后的标题");
+    assert.equal(renamed?.title, "手动改名后的标题");
+
+    const cfgDir = path.join(dataDir, "cfg");
+    fs.mkdirSync(cfgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cfgDir, "mcp_config.json"),
+      JSON.stringify({
+        mcpServers: {
+          github: {
+            serverUrl: "https://api.githubcopilot.com/mcp/",
+            headers: { Authorization: "Bearer super-secret-do-not-expose" },
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(cfgDir, "hooks.json"),
+      JSON.stringify({ "auto-zh-title": { Stop: [] } }),
+    );
+    const overview = store.readSafeConfigOverview(cfgDir);
+    assert.equal(overview.mcpServers.length, 1);
+    assert.equal(overview.mcpServers[0].name, "github");
+    assert.equal(overview.hooks[0].name, "auto-zh-title");
+    assert.equal(JSON.stringify(overview).includes("super-secret"), false);
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true });
   }

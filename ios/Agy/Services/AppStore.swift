@@ -6,6 +6,10 @@ import Observation
 final class AppStore {
     private static let serverURLKey = "agy_server_url"
     private static let authTokenKey = "agy_auth_token"
+    private static let defaultModelPrefKey = "agy_pref_model"
+    private static let defaultEffortPrefKey = "agy_pref_effort"
+    private static let defaultModePrefKey = "agy_pref_mode"
+    private static let autoApprovePrefKey = "agy_pref_auto_approve"
 
     private let secretStore: SecretStoring
     private var service: BridgeServicing
@@ -17,11 +21,15 @@ final class AppStore {
 
     var bridgeOnline: Bool = false
     var healthInfo: BridgeHealth?
+    var configOverview: ConfigOverview?
     var connectionError: String?
+    var messagesErrorByConversation: [String: String] = [:]
 
     var conversations: [ConversationSummary] = []
     var selectedConversationID: String?
+    var activeViewingConversationID: String?
     var messagesByConversation: [String: [ChatMessage]] = [:]
+    var liveStepByConversation: [String: LiveStepStatus] = [:]
 
     var models: [ModelInfo] = [
         ModelInfo(id: "gemini-3.8-flash-medium", displayName: "Gemini 3.8 Flash (Medium)"),
@@ -30,9 +38,21 @@ final class AppStore {
     ]
     var workspaces: [String] = []
 
-    var selectedModelID: String = "gemini-3.8-flash-medium"
-    var selectedEffort: EffortLevel = .medium
-    var selectedMode: AgentMode = .auto
+    var selectedModelID: String {
+        didSet { UserDefaults.standard.set(selectedModelID, forKey: Self.defaultModelPrefKey) }
+    }
+
+    var selectedEffort: EffortLevel {
+        didSet { UserDefaults.standard.set(selectedEffort.rawValue, forKey: Self.defaultEffortPrefKey) }
+    }
+
+    var selectedMode: AgentMode {
+        didSet { UserDefaults.standard.set(selectedMode.rawValue, forKey: Self.defaultModePrefKey) }
+    }
+
+    var autoSkipPermissions: Bool {
+        didSet { UserDefaults.standard.set(autoSkipPermissions, forKey: Self.autoApprovePrefKey) }
+    }
 
     var searchQuery: String = ""
     var isLoadingConversations: Bool = false
@@ -53,6 +73,16 @@ final class AppStore {
         self.secretStore = secretStore
         self.service = demoMode ? DemoBridgeService() : service
         self.isDemoMode = demoMode
+
+        let savedModel = UserDefaults.standard.string(forKey: Self.defaultModelPrefKey)
+        let savedEffort = UserDefaults.standard.string(forKey: Self.defaultEffortPrefKey).flatMap(EffortLevel.init(rawValue:))
+        let savedMode = UserDefaults.standard.string(forKey: Self.defaultModePrefKey).flatMap(AgentMode.init(rawValue:))
+        let hasAutoApprovePref = UserDefaults.standard.object(forKey: Self.autoApprovePrefKey) != nil
+
+        self.selectedModelID = savedModel ?? "gemini-3.8-flash-medium"
+        self.selectedEffort = savedEffort ?? .medium
+        self.selectedMode = savedMode ?? .auto
+        self.autoSkipPermissions = hasAutoApprovePref ? UserDefaults.standard.bool(forKey: Self.autoApprovePrefKey) : true
 
         if demoMode {
             self.serverURLString = "https://demo.local"
@@ -123,9 +153,21 @@ final class AppStore {
         secretStore.delete(forKey: Self.authTokenKey)
         bridgeOnline = false
         healthInfo = nil
+        configOverview = nil
+        connectionError = nil
         conversations = []
         messagesByConversation = [:]
+        messagesErrorByConversation = [:]
         selectedConversationID = nil
+    }
+
+    func handleForegroundReturn() async {
+        guard isConfigured else { return }
+        connectStream()
+        await refreshDashboard()
+        if let viewingID = activeViewingConversationID {
+            await loadMessages(for: viewingID)
+        }
     }
 
     func connectStream() {
@@ -150,7 +192,7 @@ final class AppStore {
                     self?.bridgeOnline = false
                 }
                 try? await Task.sleep(for: .seconds(delaySeconds))
-                delaySeconds = min(delaySeconds * 2, 20)
+                delaySeconds = min(delaySeconds * 2, 15)
             }
         }
     }
@@ -174,21 +216,50 @@ final class AppStore {
 
             if !fetchedModels.isEmpty {
                 models = fetchedModels
-                if let def = health.defaultModel, fetchedModels.contains(where: { $0.id == def }) {
-                    selectedModelID = def
-                } else if !fetchedModels.contains(where: { $0.id == selectedModelID }) {
-                    selectedModelID = fetchedModels[0].id
+                if !fetchedModels.contains(where: { $0.id == selectedModelID }) {
+                    if let def = health.defaultModel, fetchedModels.contains(where: { $0.id == def }) {
+                        selectedModelID = def
+                    } else {
+                        selectedModelID = fetchedModels[0].id
+                    }
                 }
             }
             workspaces = fetchedWorkspaces
+            configOverview = try? await service.fetchConfigOverview(baseURL: creds.baseURL, token: creds.token)
         } catch {
             connectionError = error.localizedDescription
+        }
+    }
+
+    func refreshConfigOverview() async {
+        guard let creds = activeCredentials() else { return }
+        if let overview = try? await service.fetchConfigOverview(baseURL: creds.baseURL, token: creds.token) {
+            configOverview = overview
+        }
+    }
+
+    func toggleMcpServer(name: String, enabled: Bool) async throws {
+        guard let creds = activeCredentials() else { return }
+        let updatedState = try await service.toggleMcpServer(baseURL: creds.baseURL, token: creds.token, name: name, enabled: enabled)
+        if var overview = configOverview,
+           let idx = overview.mcpServers.firstIndex(where: { $0.name == name }) {
+            overview.mcpServers[idx].enabled = updatedState
+            configOverview = overview
+        }
+    }
+
+    func renameConversation(id: String, title: String) async throws {
+        guard let creds = activeCredentials() else { return }
+        let updated = try await service.renameConversation(baseURL: creds.baseURL, token: creds.token, conversationId: id, title: title)
+        if let idx = conversations.firstIndex(where: { $0.id == id }) {
+            conversations[idx] = updated
         }
     }
 
     func loadMessages(for conversationId: String) async {
         guard let creds = activeCredentials() else { return }
         isLoadingMessages = true
+        messagesErrorByConversation[conversationId] = nil
         defer { isLoadingMessages = false }
 
         do {
@@ -199,7 +270,9 @@ final class AppStore {
             }
             connectionError = nil
         } catch {
-            connectionError = error.localizedDescription
+            let errText = error.localizedDescription
+            messagesErrorByConversation[conversationId] = errText
+            connectionError = errText
         }
     }
 
@@ -220,6 +293,7 @@ final class AppStore {
         let chosenMode = mode ?? selectedMode
 
         if let cid = conversationId {
+            messagesErrorByConversation[cid] = nil
             var current = messagesByConversation[cid] ?? []
             current.append(
                 ChatMessage(
@@ -264,16 +338,30 @@ final class AppStore {
             workspace: workspace,
             model: chosenModel,
             effort: chosenEffort,
-            mode: chosenMode
+            mode: chosenMode,
+            dangerouslySkipPermissions: autoSkipPermissions
         )
 
         do {
             try await service.sendPrompt(payload, baseURL: creds.baseURL, token: creds.token)
             connectionError = nil
+            if !bridgeOnline {
+                connectStream()
+            }
         } catch {
-            connectionError = error.localizedDescription
+            let errText = error.localizedDescription
+            connectionError = errText
             if let cid = conversationId {
                 activeStreamingRuns.removeValue(forKey: cid)
+                liveStepByConversation.removeValue(forKey: cid)
+                var list = messagesByConversation[cid] ?? []
+                if let lastIdx = list.indices.last, list[lastIdx].role == .assistant, list[lastIdx].status == "ACTIVE" {
+                    list[lastIdx].status = "ERROR"
+                    list[lastIdx].error = errText
+                    messagesByConversation[cid] = list
+                }
+            } else {
+                pendingNewRun = nil
             }
         }
     }
@@ -281,6 +369,8 @@ final class AppStore {
     func abortRun(conversationId: String) async {
         guard let creds = activeCredentials() else { return }
         _ = try? await service.abortRun(baseURL: creds.baseURL, token: creds.token, conversationId: conversationId)
+        activeStreamingRuns.removeValue(forKey: conversationId)
+        liveStepByConversation.removeValue(forKey: conversationId)
     }
 
     func handleStreamEvent(_ event: BridgeStreamEvent) {
@@ -289,6 +379,7 @@ final class AppStore {
             bridgeOnline = event.online ?? false
             if !bridgeOnline {
                 activeStreamingRuns.removeAll()
+                liveStepByConversation.removeAll()
             }
 
         case "run.started":
@@ -350,6 +441,17 @@ final class AppStore {
                 selectedConversationID = cid
             }
 
+        case "run.step":
+            guard let cid = event.conversationId else { return }
+            liveStepByConversation[cid] = LiveStepStatus(
+                stepIndex: event.stepIndex ?? 0,
+                stepType: event.stepType ?? "unknown",
+                state: event.state ?? "ACTIVE",
+                toolName: event.toolName,
+                toolParameters: event.toolParameters,
+                toolOutputPreview: event.toolOutputPreview
+            )
+
         case "run.delta":
             guard let cid = event.conversationId, let delta = event.textDelta else { return }
             var list = messagesByConversation[cid] ?? []
@@ -377,6 +479,7 @@ final class AppStore {
         case "run.completed":
             guard let cid = event.conversationId else { return }
             activeStreamingRuns.removeValue(forKey: cid)
+            liveStepByConversation.removeValue(forKey: cid)
             var list = messagesByConversation[cid] ?? []
             if let lastIdx = list.indices.last, list[lastIdx].role == .assistant {
                 if list[lastIdx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -399,6 +502,7 @@ final class AppStore {
         case "run.aborted":
             guard let cid = event.conversationId else { return }
             activeStreamingRuns.removeValue(forKey: cid)
+            liveStepByConversation.removeValue(forKey: cid)
             var list = messagesByConversation[cid] ?? []
             if let lastIdx = list.indices.last, list[lastIdx].role == .assistant {
                 list[lastIdx].status = "ABORTED"
@@ -414,6 +518,7 @@ final class AppStore {
         case "run.error":
             if let cid = event.conversationId {
                 activeStreamingRuns.removeValue(forKey: cid)
+                liveStepByConversation.removeValue(forKey: cid)
                 var list = messagesByConversation[cid] ?? []
                 if let lastIdx = list.indices.last, list[lastIdx].role == .assistant, list[lastIdx].status == "ACTIVE" {
                     list[lastIdx].status = "ERROR"

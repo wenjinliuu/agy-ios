@@ -175,7 +175,7 @@ export class BridgeRelayDO extends DurableObject {
       return;
     }
 
-    const isVps = this.ctx.getWebSockets("vps").includes(ws);
+    const isVps = this.ctx.getTags(ws).includes("vps");
 
     if (isVps) {
       const msg = parsed as Partial<RelayWireMessage>;
@@ -239,7 +239,7 @@ export class BridgeRelayDO extends DurableObject {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
-    if (this.ctx.getWebSockets("vps").includes(ws) && !this.getOpenVpsSocket()) {
+    if (this.ctx.getTags(ws).includes("vps") && !this.getOpenVpsSocket()) {
       this.vpsConnectedAt = null;
       this.rejectAllPending("VPS bridge disconnected");
       this.broadcastToClients({ type: "bridge.status", online: false });
