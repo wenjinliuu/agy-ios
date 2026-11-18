@@ -1,6 +1,33 @@
 import XCTest
 @testable import Agy
 
+private final class IdleMockBridgeService: BridgeServicing, @unchecked Sendable {
+    func checkHealth(baseURL: URL, token: String) async throws -> BridgeHealth {
+        BridgeHealth(
+            ok: true,
+            bridgeVersion: "0.1.0",
+            hostname: "mock",
+            agyVersion: "1.5.10",
+            activeRuns: 0,
+            defaultWorkspace: "/tmp",
+            defaultModel: "gemini-3.8-flash-medium",
+            timestamp: "2026-11-18T00:00:00Z"
+        )
+    }
+
+    func fetchModels(baseURL: URL, token: String) async throws -> [ModelInfo] { [] }
+    func fetchWorkspaces(baseURL: URL, token: String) async throws -> [String] { [] }
+    func fetchConversations(baseURL: URL, token: String, query: String) async throws -> [ConversationSummary] { [] }
+    func fetchMessages(baseURL: URL, token: String, conversationId: String) async throws -> MessagesEnvelope {
+        throw BridgeClientError.notConfigured
+    }
+    func abortRun(baseURL: URL, token: String, conversationId: String) async throws -> Bool { true }
+    func openStream(baseURL: URL, token: String) -> AsyncThrowingStream<BridgeStreamEvent, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+    func sendPrompt(_ payload: SendPromptRequest, baseURL: URL, token: String) async throws {}
+}
+
 final class BridgeTests: XCTestCase {
     func testNormalizedBaseURLAndWebSocketURL() {
         let bareWorker = BridgeConfiguration.normalizedBaseURL(from: "agy-bridge.demo.workers.dev/")
@@ -51,14 +78,22 @@ final class BridgeTests: XCTestCase {
 
     @MainActor
     func testAppStoreDemoAndStreamingStateTransitions() async throws {
-        let store = AppStore(secretStore: InMemorySecretStore(), service: DemoBridgeService(), demoMode: false)
-        XCTAssertFalse(store.isConfigured)
+        let demoStore = AppStore(secretStore: InMemorySecretStore(), service: DemoBridgeService(), demoMode: false)
+        XCTAssertFalse(demoStore.isConfigured)
+        await demoStore.enableDemoMode()
+        XCTAssertTrue(demoStore.isConfigured)
+        XCTAssertEqual(demoStore.conversations.count, 2)
 
-        await store.enableDemoMode()
-        XCTAssertTrue(store.isConfigured)
-        XCTAssertEqual(store.conversations.count, 2)
+        let store = AppStore(
+            secretStore: InMemorySecretStore([
+                "agy_server_url": "https://mock.local",
+                "agy_auth_token": "mock-token",
+            ]),
+            service: IdleMockBridgeService(),
+            demoMode: false
+        )
 
-        // Simulate new conversation streaming sequence
+        // Simulate new conversation streaming sequence deterministically without background DemoBridgeService emissions
         await store.sendPrompt(text: "列出目录", conversationId: nil)
         XCTAssertNotNil(store.pendingNewRun)
 

@@ -160,7 +160,7 @@ private struct ConversationRow: View {
                 if !conversation.lastModifiedAt.isEmpty {
                     Text(Self.shortTimestamp(conversation.lastModifiedAt))
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
